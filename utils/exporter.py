@@ -94,8 +94,12 @@ def export_to_excel(results: list) -> bytes:
             "Source": r.get("source_name", ""),
             "Core Narrative": r.get("core_narrative", ""),
             "Intent": r.get("intent", ""),
+            "Recommendation": r.get("recommendation", {}).get("action", "REVIEW"),
+            "Rec. Reason": r.get("recommendation", {}).get("primary_reason", ""),
             "Campaign Fit Score": cf.get("score", ""),
             "Campaign Fit Label": cf.get("label", ""),
+            "Msg Alignment": cf.get("component_scores", {}).get("message_alignment", 0),
+            "Entity Coverage": cf.get("component_scores", {}).get("entity_coverage", 0),
             "Overall Sentiment": r.get("sentiment_overall", ""),
             "Content Warnings": warnings,
             "Total Claims": len(fact_checks),
@@ -174,6 +178,27 @@ def export_to_excel(results: list) -> bytes:
                     for c in row:
                         if str(c.value) in risk_fills:
                             c.fill = risk_fills[str(c.value)]
+                break
+
+        # Color: Recommendation column
+        for cell in ws_sum[1]:
+            if cell.value == "Recommendation":
+                rec_fills = {
+                    "PUBLISH": PatternFill("solid", fgColor="0D2818"),
+                    "REVIEW":  PatternFill("solid", fgColor="2D1F00"),
+                    "REJECT":  PatternFill("solid", fgColor="2D0F1A"),
+                }
+                rec_fonts = {
+                    "PUBLISH": Font(color="00D4AA", bold=True),
+                    "REVIEW":  Font(color="FFB800", bold=True),
+                    "REJECT":  Font(color="FF4B6E", bold=True),
+                }
+                for row in ws_sum.iter_rows(min_row=2, min_col=cell.column, max_col=cell.column):
+                    for c in row:
+                        v = str(c.value or "")
+                        if v in rec_fills:
+                            c.fill = rec_fills[v]
+                            c.font = rec_fonts.get(v, Font())
                 break
 
         # Color: Verdict column in Fact Checks

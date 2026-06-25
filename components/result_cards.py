@@ -17,6 +17,141 @@ def _sentiment_class(s: str) -> str:
     return f"sentiment-{s.lower()}" if s else "sentiment-neutral"
 
 
+def render_recommendation_badge(recommendation: dict):
+    action = recommendation.get('action', 'REVIEW')
+    styles = {
+        'PUBLISH': ('🟢 PUBLISH',      '#00D4AA', '#0D2818', '#00D4AA'),
+        'REVIEW':  ('🟡 NEEDS REVIEW', '#FFB800', '#2D1F00', '#FFB800'),
+        'REJECT':  ('🔴 REJECT',       '#FF4B6E', '#2D0F1A', '#FF4B6E'),
+    }
+    label, text_color, bg_color, border_color = styles.get(action, styles['REVIEW'])
+    primary_reason = recommendation.get('primary_reason', '')
+    reasons = recommendation.get('reasons', [])
+    reasons_html = "".join(
+        f'<div style="color:#6B7280;font-size:12px;padding:2px 0;">• {r}</div>'
+        for r in reasons
+    )
+    st.markdown(f"""
+        <div style="background:{bg_color};border:1px solid {border_color};
+                    border-radius:10px;padding:16px 20px;margin-bottom:16px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+                <span style="color:{text_color};font-size:18px;font-weight:800;letter-spacing:1px;">
+                    {label}
+                </span>
+                <span style="color:#6B7280;font-size:12px;">Analyst Decision</span>
+            </div>
+            <div style="color:#E8E8F0;font-size:13px;margin-top:8px;">{primary_reason}</div>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #2D3045;">
+                {reasons_html}
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+
+def render_campaign_components(campaign_fit: dict):
+    components = campaign_fit.get('component_scores', {})
+    explanations = campaign_fit.get('component_explanations', {})
+    if not components:
+        return
+    labels = {
+        'message_alignment': '💬 Message',
+        'entity_coverage':   '👥 Entities',
+        'theme_coverage':    '🎯 Theme',
+        'purpose_alignment': '🏷️ Purpose',
+        'audience_alignment':'👤 Audience',
+    }
+    st.markdown("**Component Breakdown:**")
+    for key, display_label in labels.items():
+        score = components.get(key, 0)
+        explanation = explanations.get(key, '')
+        bar_color = "#00D4AA" if score >= 70 else "#FFB800" if score >= 40 else "#FF4B6E"
+        st.markdown(f"""
+            <div style="margin-bottom:10px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                    <span style="color:#E8E8F0;">{display_label}</span>
+                    <span style="color:{bar_color};font-weight:600;">{score}/100</span>
+                </div>
+                <div style="background:#0F1117;height:6px;border-radius:3px;margin-bottom:3px;">
+                    <div style="width:{score}%;height:6px;background:{bar_color};border-radius:3px;"></div>
+                </div>
+                <div style="color:#6B7280;font-size:11px;">{explanation}</div>
+            </div>
+        """, unsafe_allow_html=True)
+    missing = campaign_fit.get('missing_talking_points', [])
+    if missing:
+        st.markdown("**Missing Talking Points:** " + " • ".join(f"`{m}`" for m in missing))
+
+
+def render_fact_check_card(fc: dict, index: int):
+    verdict = fc.get('verdict', 'UNVERIFIABLE')
+    confidence = fc.get('confidence', 0)
+    claim = fc.get('claim', '')
+    reasoning = fc.get('reasoning', '')
+    correct_fact = fc.get('correct_fact', '')
+    source_url = fc.get('source_url', '')
+    source_title = fc.get('source_title', 'View Source') or 'View Source'
+
+    verdict_config = {
+        'TRUE':           {'icon': '✅', 'label': 'VERIFIED TRUE',   'color': '#00D4AA', 'bg': '#0D2818'},
+        'FALSE':          {'icon': '❌', 'label': 'VERIFIED FALSE',  'color': '#FF4B6E', 'bg': '#2D0F1A'},
+        'MISLEADING':     {'icon': '⚠️', 'label': 'MISLEADING',      'color': '#FFB800', 'bg': '#2D1F00'},
+        'PARTIALLY_TRUE': {'icon': '🔶', 'label': 'PARTIALLY TRUE',  'color': '#40C4AA', 'bg': '#1A2020'},
+        'UNVERIFIABLE':   {'icon': '❓', 'label': 'UNVERIFIABLE',    'color': '#6B7280', 'bg': '#1A1D27'},
+    }
+    cfg = verdict_config.get(verdict, verdict_config['UNVERIFIABLE'])
+    short_reasoning = (reasoning[:180] + "...") if len(reasoning) > 180 else reasoning
+
+    correct_fact_html = ""
+    if correct_fact and verdict in ['FALSE', 'MISLEADING']:
+        correct_fact_html = f"""
+            <div style="background:#0D2818;border:1px solid #00D4AA22;border-radius:6px;
+                        padding:8px 10px;margin-top:8px;">
+                <span style="color:#00D4AA;font-size:11px;font-weight:600;">✏️ CORRECT FACT</span>
+                <div style="color:#E8E8F0;font-size:12px;margin-top:3px;">{correct_fact}</div>
+            </div>"""
+
+    source_html = ""
+    if source_url:
+        source_html = f"""
+            <a href="{source_url}" target="_blank"
+               style="color:#6C63FF;font-size:11px;text-decoration:none;
+                      display:inline-block;margin-top:8px;">
+                🔗 {str(source_title)[:60]}
+            </a>"""
+
+    st.markdown(f"""
+        <div style="background:{cfg['bg']};border:1px solid {cfg['color']}33;
+                    border-left:3px solid {cfg['color']};
+                    border-radius:8px;padding:14px 16px;margin-bottom:10px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                <span style="background:{cfg['bg']};color:{cfg['color']};
+                             border:1px solid {cfg['color']};border-radius:4px;
+                             padding:3px 10px;font-size:11px;font-weight:800;letter-spacing:0.5px;">
+                    {cfg['icon']} {cfg['label']}
+                </span>
+                <span style="color:#6B7280;font-size:11px;">Confidence: {confidence}%</span>
+            </div>
+            <div style="background:#0F111722;height:3px;border-radius:2px;margin-bottom:10px;">
+                <div style="width:{confidence}%;height:3px;background:{cfg['color']};border-radius:2px;"></div>
+            </div>
+            <div style="color:#E8E8F0;font-size:13px;font-style:italic;
+                        margin-bottom:8px;line-height:1.5;">
+                "{claim}"
+            </div>
+            <details>
+                <summary style="color:#6B7280;font-size:12px;cursor:pointer;user-select:none;">
+                    📄 Evidence Summary
+                </summary>
+                <div style="color:#9CA3AF;font-size:12px;margin-top:6px;line-height:1.6;padding-left:10px;">
+                    {short_reasoning}
+                </div>
+            </details>
+            {correct_fact_html}
+            {source_html}
+        </div>
+    """, unsafe_allow_html=True)
+
+
 def render_result_card(r: dict):
     source = r.get("source_name", "Unknown")
     status = r.get("analysis_status", "success")
@@ -25,6 +160,11 @@ def render_result_card(r: dict):
         if status != "success":
             st.error(f"Analysis failed: {r.get('error', 'Unknown error')}")
             return
+
+        # Recommendation badge — very top
+        rec = r.get('recommendation', {})
+        if rec:
+            render_recommendation_badge(rec)
 
         # Row 1: Narrative + intent + sentiment
         col1, col2, col3 = st.columns([3, 1, 1])
@@ -42,7 +182,7 @@ def render_result_card(r: dict):
 
         st.divider()
 
-        # Row 2: Campaign fit
+        # Row 2: Campaign fit + component scores
         cf = r.get("campaign_fit", {})
         score = cf.get("score", 0)
         col_s, col_r = st.columns([1, 3])
@@ -58,6 +198,7 @@ def render_result_card(r: dict):
             if missing:
                 st.markdown("**Missing:** " + ", ".join(missing))
 
+        render_campaign_components(cf)
         st.divider()
 
         # Row 3: Risk Assessment
@@ -66,7 +207,6 @@ def render_result_card(r: dict):
         risk_level = risk.get("risk_level", "LOW")
         risk_score = risk.get("risk_score", 0)
         needs_review = risk.get("needs_human_review", False)
-
         level_colors = {"HIGH": "#FF4B6E", "MEDIUM": "#FFB800", "LOW": "#00D4AA"}
         color = level_colors.get(risk_level, "#6B7280")
 
@@ -150,50 +290,15 @@ def render_result_card(r: dict):
                 c4.markdown(e.get("context", ""))
             st.divider()
 
-        # Row 5: Fact checks — enhanced HTML cards
+        # Row 5: Fact checks
         fact_checks = r.get("fact_checks", [])
-        if fact_checks:
-            st.markdown("**Fact Checks**")
-            verdict_map = {
-                "TRUE":           ("✅", "#00D4AA", "#0D2818"),
-                "FALSE":          ("❌", "#FF4B6E", "#2D0F1A"),
-                "MISLEADING":     ("⚠️", "#FFB800", "#2D1F00"),
-                "PARTIALLY_TRUE": ("🔶", "#40C4AA", "#1A2020"),
-                "UNVERIFIABLE":   ("❓", "#6B7280", "#1A1D27"),
-            }
-            for fc in fact_checks:
-                verdict = fc.get("verdict", "UNVERIFIABLE")
-                if verdict == "SKIPPED":
-                    continue
-                confidence = fc.get("confidence", 0)
-                icon, text_color, bg_color = verdict_map.get(verdict, ("❓", "#6B7280", "#1A1D27"))
-                correct_html = (
-                    f'<div style="color:#00D4AA;font-size:12px;margin-top:6px;">✏️ Correct: {fc.get("correct_fact","")}</div>'
-                    if fc.get("correct_fact") else ""
-                )
-                source_html = (
-                    f'<a href="{fc.get("source_url","")}" target="_blank" '
-                    f'style="color:#6C63FF;font-size:12px;">🔗 {fc.get("source_title","View Source")}</a>'
-                    if fc.get("source_url") else ""
-                )
-                reasoning_text = (fc.get("reasoning") or "")[:200]
-                claim_text = fc.get("claim", "")
-                st.markdown(f"""
-                    <div style="background:{bg_color};border:1px solid {text_color};
-                                border-radius:8px;padding:12px;margin-bottom:10px;">
-                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-                            <span style="color:{text_color};font-weight:700;">{icon} {verdict}</span>
-                            <span style="color:#6B7280;font-size:12px;">{confidence}% confidence</span>
-                        </div>
-                        <div style="background:#0F1117;height:4px;border-radius:2px;">
-                            <div style="width:{confidence}%;height:4px;background:{text_color};border-radius:2px;"></div>
-                        </div>
-                        <div style="color:#E8E8F0;font-size:13px;margin-top:8px;">"{claim_text}"</div>
-                        <div style="color:#6B7280;font-size:12px;margin-top:6px;">{reasoning_text}</div>
-                        {correct_html}
-                        {source_html}
-                    </div>
-                """, unsafe_allow_html=True)
+        checked = [fc for fc in fact_checks if fc.get("verdict") != "SKIPPED"]
+        st.markdown("**🔍 Fact Checks**")
+        if checked:
+            for i, fc in enumerate(checked):
+                render_fact_check_card(fc, i)
+        else:
+            st.info("No fact checks performed for this item.")
 
         # Row 6: Warnings
         warnings = [w for w in r.get("content_warnings", []) if w and w.lower() != "none"]

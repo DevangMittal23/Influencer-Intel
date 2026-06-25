@@ -35,6 +35,14 @@ Risk score rules (be consistent):
 - risk_level: 7-10 = HIGH, 4-6 = MEDIUM, 0-3 = LOW
 - needs_human_review = true if risk_score >= 6 OR if intent == "mislead" OR if any claim makes a specific statistic that contradicts established science
 
+Campaign component scores must be consistent:
+- message_alignment: 0-100, how closely does content match the required_message field
+- entity_coverage: 0-100, how many required_people are mentioned positively or neutrally (0 if none mentioned, 100 if all mentioned)
+- theme_coverage: 0-100, how thoroughly is the campaign theme covered
+- purpose_alignment: 0-100, does the content purpose match campaign purpose
+- audience_alignment: 0-100, is tone/complexity right for target audience
+- Final score = (message_alignment * 0.35) + (entity_coverage * 0.25) + (theme_coverage * 0.20) + (purpose_alignment * 0.10) + (audience_alignment * 0.10)
+
 Return ONLY this JSON structure, nothing else:
 {{
   "core_narrative": "2-3 sentence summary of main message",
@@ -52,8 +60,23 @@ Return ONLY this JSON structure, nothing else:
   "campaign_fit": {{
     "score": 72,
     "label": "Good Fit|Strong Fit|Weak Fit|No Fit|Off-Message",
-    "reasoning": "explanation of score",
-    "missing_elements": ["what is missing from campaign requirements"]
+    "reasoning": "overall explanation",
+    "missing_elements": ["what is missing from campaign requirements"],
+    "component_scores": {{
+      "message_alignment": 80,
+      "entity_coverage": 60,
+      "theme_coverage": 75,
+      "purpose_alignment": 70,
+      "audience_alignment": 65
+    }},
+    "component_explanations": {{
+      "message_alignment": "how well content matches required message",
+      "entity_coverage": "which required people/groups were mentioned",
+      "theme_coverage": "how well content covers the campaign theme",
+      "purpose_alignment": "does content purpose match campaign purpose",
+      "audience_alignment": "is tone/content right for target audience"
+    }},
+    "missing_talking_points": ["specific talking points absent from this content"]
   }},
   "factual_claims": [
     {{
@@ -128,10 +151,7 @@ def _compute_risk_score(result: dict, fact_checks: list = None) -> dict:
         factors.append(f"{checkworthy_count} checkworthy claims detected")
 
     if fact_checks:
-        false_count = sum(
-            1 for fc in fact_checks
-            if fc.get('verdict') in ['FALSE', 'MISLEADING']
-        )
+        false_count = sum(1 for fc in fact_checks if fc.get('verdict') in ['FALSE', 'MISLEADING'])
         score += false_count * 2
         if false_count > 0:
             factors.append(f"{false_count} false/misleading claims verified")
@@ -164,6 +184,75 @@ def _compute_risk_score(result: dict, fact_checks: list = None) -> dict:
         result['risk_assessment']['needs_human_review'] = needs_review
 
     return result
+
+
+def compute_recommendation(result: dict) -> dict:
+    risk_score = result.get('risk_assessment', {}).get('risk_score', 0)
+    risk_level = result.get('risk_assessment', {}).get('risk_level', 'LOW')
+    fit_score = result.get('campaign_fit', {}).get('score', 0)
+    intent = result.get('intent', 'inform')
+    fact_checks = result.get('fact_checks', [])
+    needs_review = result.get('risk_assessment', {}).get('needs_human_review', False)
+
+    false_claims = sum(1 for fc in fact_checks if fc.get('verdict') == 'FALSE')
+    misleading_claims = sum(1 for fc in fact_checks if fc.get('verdict') == 'MISLEADING')
+    unverifiable_claims = sum(1 for fc in fact_checks if fc.get('verdict') == 'UNVERIFIABLE')
+
+    reasons = []
+    action = 'PUBLISH'
+
+    # REJECT conditions
+    if false_claims >= 2:
+        action = 'REJECT'
+        reasons.append(f"{false_claims} verified false claims detected")
+    if risk_score >= 8:
+        action = 'REJECT'
+        reasons.append(f"Unacceptable risk score ({risk_score}/10)")
+    if intent == 'mislead' and false_claims >= 1:
+        action = 'REJECT'
+        reasons.append("Confirmed misleading intent with false claims")
+    if fit_score < 15 and risk_score >= 5:
+        action = 'REJECT'
+        reasons.append("Poor campaign alignment with elevated risk")
+
+    # REVIEW conditions
+    if action != 'REJECT':
+        if false_claims == 1:
+            action = 'REVIEW'
+            reasons.append("1 verified false claim — verify before publishing")
+        if misleading_claims >= 1:
+            action = 'REVIEW'
+            reasons.append(f"{misleading_claims} misleading claim(s) need editorial review")
+        if risk_level == 'HIGH':
+            action = 'REVIEW'
+            reasons.append("High risk score requires human approval")
+        if fit_score < 40:
+            action = 'REVIEW'
+            reasons.append(f"Low campaign fit ({fit_score}/100) — check alignment")
+        if unverifiable_claims >= 3:
+            action = 'REVIEW'
+            reasons.append(f"{unverifiable_claims} claims could not be verified")
+        if needs_review and action == 'PUBLISH':
+            action = 'REVIEW'
+            reasons.append("Flagged by automated risk assessment")
+
+    # PUBLISH — positive reasons
+    if action == 'PUBLISH':
+        if fit_score >= 70:
+            reasons.append(f"Strong campaign alignment ({fit_score}/100)")
+        if false_claims == 0:
+            reasons.append("No false claims detected")
+        if risk_score <= 3:
+            reasons.append("Low risk content")
+
+    return {
+        'action': action,
+        'reasons': reasons,
+        'primary_reason': reasons[0] if reasons else "Automated assessment",
+        'fit_score': fit_score,
+        'risk_score': risk_score,
+        'false_claims': false_claims,
+    }
 
 
 def analyze_content(text: str, source_name: str, campaign_brief: dict, llm_client: LLMClient) -> dict:

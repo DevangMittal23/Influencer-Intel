@@ -10,10 +10,10 @@ st.set_page_config(
 
 from components.ui_styles import apply_styles
 from components.result_cards import render_result_card
-from components.dashboard import render_metrics, render_dashboard_table
+from components.dashboard import render_metrics, render_dashboard_table, generate_executive_summary, render_executive_summary
 from utils.llm_client import LLMClient
 from utils.extractor import extract_text
-from utils.analyzer import analyze_content, _compute_risk_score
+from utils.analyzer import analyze_content, _compute_risk_score, compute_recommendation
 from utils.factchecker import fact_check_claims
 from utils.exporter import export_to_csv, export_to_excel
 
@@ -304,6 +304,7 @@ with tab1:
                     result["fact_checks"] = fcs
                     # Re-run risk scorer with actual fact-check verdicts
                     result = _compute_risk_score(result, fact_checks=fcs)
+                    result['recommendation'] = compute_recommendation(result)
                     checked = sum(1 for f in fcs if f.get("search_performed"))
                     status_box.write(f"✅ {checked} claim(s) checked for `{result['source_name']}`")
                 except Exception as e:
@@ -314,6 +315,11 @@ with tab1:
                 )
         elif not skip_factcheck and not tavily_key:
             status_box.write("⚠️ Tavily key not provided — fact-checking skipped.")
+
+        # Compute recommendation for items where fact-checking was skipped
+        for result in analyzed_items:
+            if result.get('analysis_status') == 'success' and 'recommendation' not in result:
+                result['recommendation'] = compute_recommendation(result)
 
         progress_bar.progress(1.0, text="Complete!")
         elapsed = round(time.time() - start_time, 1)
@@ -333,6 +339,8 @@ with tab2:
         ts = st.session_state.get("run_timestamp", "")
         if ts:
             st.caption(f"Last run: {ts}")
+        summary = generate_executive_summary(results)
+        render_executive_summary(summary)
         render_metrics(results)
         st.markdown("")
         filtered = render_dashboard_table(results)
