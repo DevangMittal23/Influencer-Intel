@@ -69,14 +69,12 @@ for _k, _s in [("_gemini_key", "GEMINI_API_KEY"), ("_groq_key", "GROQ_API_KEY"),
         st.session_state[_k] = _secret(_s)
 
 # ── Campaign brief persistence ─────────────────────────────────────────────────
-_brief_defaults = {
-    "_campaign_theme": "",
-    "_campaign_message": "",
-    "_campaign_people": "",
-    "_campaign_purpose": "Public Health",
-    "_campaign_audience": "",
-}
-for k, v in _brief_defaults.items():
+# Use _val_* keys as plain storage — NOT bound to any widget.
+# This avoids Streamlit's "cannot modify after widget instantiated" error.
+for k, v in {
+    "_val_theme": "", "_val_message": "", "_val_people": "",
+    "_val_purpose": "Public Health", "_val_audience": "",
+}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
@@ -86,38 +84,40 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 🎯 Campaign Brief")
+    _purpose_options = ["Public Health", "Political", "Brand Promotion", "Social Awareness", "Entertainment", "Other"]
     campaign_theme = st.text_input(
         "Campaign Theme",
+        value=st.session_state["_val_theme"],
         placeholder="e.g. Natural immunity, Climate action",
-        key="_campaign_theme",
     )
     required_message = st.text_area(
         "Required Message",
+        value=st.session_state["_val_message"],
         placeholder="What should the content say?",
-        key="_campaign_message",
         height=100,
     )
     key_people = st.text_input(
         "Key People/Groups to Track",
+        value=st.session_state["_val_people"],
         placeholder="Dr. Anjali, Ministry of Health",
-        key="_campaign_people",
     )
     campaign_purpose = st.selectbox(
         "Campaign Purpose",
-        options=["Public Health", "Political", "Brand Promotion", "Social Awareness", "Entertainment", "Other"],
-        key="_campaign_purpose",
+        options=_purpose_options,
+        index=_purpose_options.index(st.session_state["_val_purpose"])
+              if st.session_state["_val_purpose"] in _purpose_options else 0,
     )
     target_audience = st.text_input(
         "Target Audience",
-        key="_campaign_audience",
+        value=st.session_state["_val_audience"],
     )
 
     if st.button("⚡ Load Demo Brief", use_container_width=True):
-        st.session_state["_campaign_theme"] = DEMO_BRIEF["theme"]
-        st.session_state["_campaign_message"] = DEMO_BRIEF["required_message"]
-        st.session_state["_campaign_people"] = ", ".join(DEMO_BRIEF["required_people"])
-        st.session_state["_campaign_purpose"] = DEMO_BRIEF["purpose"]
-        st.session_state["_campaign_audience"] = DEMO_BRIEF["target_audience"]
+        st.session_state["_val_theme"]    = DEMO_BRIEF["theme"]
+        st.session_state["_val_message"]  = DEMO_BRIEF["required_message"]
+        st.session_state["_val_people"]   = ", ".join(DEMO_BRIEF["required_people"])
+        st.session_state["_val_purpose"]  = DEMO_BRIEF["purpose"]
+        st.session_state["_val_audience"] = DEMO_BRIEF["target_audience"]
         st.rerun()
 
     st.markdown("---")
@@ -157,13 +157,12 @@ with st.sidebar:
 
 # ── Build campaign brief dict ──────────────────────────────────────────────────
 def build_brief() -> dict:
-    people = [p.strip() for p in st.session_state["_campaign_people"].split(",") if p.strip()]
     return {
-        "theme": st.session_state["_campaign_theme"],
-        "required_message": st.session_state["_campaign_message"],
-        "required_people": people,
-        "purpose": st.session_state["_campaign_purpose"],
-        "target_audience": st.session_state["_campaign_audience"],
+        "theme": campaign_theme,
+        "required_message": required_message,
+        "required_people": [p.strip() for p in key_people.split(",") if p.strip()],
+        "purpose": campaign_purpose,
+        "target_audience": target_audience,
     }
 
 
@@ -222,7 +221,7 @@ with tab1:
         errors = []
         if not gemini_key and not groq_key:
             errors.append("Please enter at least one LLM API key (Gemini or Groq) in the sidebar.")
-        if not st.session_state["_campaign_theme"].strip():
+        if not campaign_theme.strip():
             errors.append("Please enter a Campaign Theme in the sidebar.")
         if total_items == 0:
             errors.append("Please upload files, enter URLs, paste text, or load demo content.")
