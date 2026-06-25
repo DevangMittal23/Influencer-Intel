@@ -1,3 +1,4 @@
+import os
 import time
 import streamlit as st
 
@@ -18,6 +19,50 @@ from utils.factchecker import fact_check_claims
 from utils.exporter import export_to_csv, export_to_excel
 
 apply_styles()
+
+
+# ── API Key Loading ────────────────────────────────────────────────────────────
+def load_api_keys() -> tuple:
+    """
+    Load API keys with priority:
+    1. Streamlit Secrets (production/deployed)
+    2. Environment variables (local development)
+    3. Graceful error if neither exists
+    """
+    def get_key(secret_name: str) -> str:
+        try:
+            val = st.secrets.get(secret_name, "")
+            if val:
+                return val
+        except Exception:
+            pass
+        return os.getenv(secret_name, "")
+
+    return get_key("GEMINI_API_KEY"), get_key("GROQ_API_KEY"), get_key("TAVILY_API_KEY")
+
+
+GEMINI_API_KEY, GROQ_API_KEY, TAVILY_API_KEY = load_api_keys()
+
+
+def validate_api_keys(gemini: str, groq: str, tavily: str):
+    missing = []
+    if not gemini:
+        missing.append("GEMINI_API_KEY")
+    if not groq:
+        missing.append("GROQ_API_KEY")
+    if not tavily:
+        missing.append("TAVILY_API_KEY")
+    if missing:
+        st.error(
+            f"⚠️ Missing API configuration: {', '.join(missing)}\n\n"
+            "Add these to Streamlit Cloud → App Settings → Secrets\n"
+            "or to your local .env file."
+        )
+        st.stop()
+
+
+validate_api_keys(GEMINI_API_KEY, GROQ_API_KEY, TAVILY_API_KEY)
+
 
 # ── Demo data ─────────────────────────────────────────────────────────────────
 DEMO_TEXTS = [
@@ -57,20 +102,7 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# ── API key persistence ────────────────────────────────────────────────────────
-def _secret(name: str) -> str:
-    try:
-        return st.secrets["api_keys"].get(name, "")
-    except Exception:
-        return ""
-
-for _k, _s in [("_gemini_key", "GEMINI_API_KEY"), ("_groq_key", "GROQ_API_KEY"), ("_tavily_key", "TAVILY_API_KEY")]:
-    if _k not in st.session_state:
-        st.session_state[_k] = _secret(_s)
-
 # ── Campaign brief persistence ─────────────────────────────────────────────────
-# Use _val_* keys as plain storage — NOT bound to any widget.
-# This avoids Streamlit's "cannot modify after widget instantiated" error.
 for k, v in {
     "_val_theme": "", "_val_message": "", "_val_people": "",
     "_val_purpose": "Public Health", "_val_audience": "",
@@ -121,32 +153,22 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🔑 API Configuration")
+    st.markdown("### ⚙️ Backend Status")
 
-    gemini_key = st.text_input(
-        "Gemini API Key",
-        type="password",
-        key="_gemini_key",
-        help="Get from: aistudio.google.com",
-    )
-    groq_key = st.text_input(
-        "Groq API Key",
-        type="password",
-        key="_groq_key",
-        help="Get from: console.groq.com",
-    )
-    tavily_key = st.text_input(
-        "Tavily API Key",
-        type="password",
-        key="_tavily_key",
-        help="Get from: tavily.com",
-    )
+    for label, desc in [
+        ("🟢 Gemini AI",      "Primary analysis engine"),
+        ("🟢 Groq Fallback",  "Backup LLM ready"),
+        ("🟢 Tavily Search",  "Fact-checking active"),
+    ]:
+        st.markdown(f"""
+            <div style="background:#1A1D27;border:1px solid #2D3045;
+                        border-radius:8px;padding:8px 12px;margin-bottom:6px;">
+                <div style="color:#E8E8F0;font-size:13px;font-weight:600;">{label}</div>
+                <div style="color:#6B7280;font-size:11px;">{desc}</div>
+            </div>
+        """, unsafe_allow_html=True)
 
-    col_a, col_b, col_c = st.columns(3)
-    col_a.markdown(f"{'🟢' if gemini_key else '🔴'} Gemini")
-    col_b.markdown(f"{'🟢' if groq_key else '🔴'} Groq")
-    col_c.markdown(f"{'🟢' if tavily_key else '⚪'} Tavily")
-    st.caption("🔒 Keys stored only in your browser session")
+    st.caption("🔒 Secured via Streamlit Secrets")
 
     st.markdown("---")
     st.markdown("### ⚙️ Processing Settings")
@@ -206,9 +228,9 @@ with tab1:
 
     url_list = [u.strip() for u in url_input.splitlines() if u.strip()]
     n_files = len(uploaded_files) if uploaded_files else 0
-    n_urls = len(url_list)
-    n_raw = 1 if raw_text_input.strip() else 0
-    n_demo = len(DEMO_TEXTS) if st.session_state["demo_loaded"] else 0
+    n_urls  = len(url_list)
+    n_raw   = 1 if raw_text_input.strip() else 0
+    n_demo  = len(DEMO_TEXTS) if st.session_state["demo_loaded"] else 0
     total_items = n_files + n_urls + n_raw + n_demo
 
     if total_items:
@@ -219,8 +241,6 @@ with tab1:
 
     if run_clicked:
         errors = []
-        if not gemini_key and not groq_key:
-            errors.append("Please enter at least one LLM API key (Gemini or Groq) in the sidebar.")
         if not campaign_theme.strip():
             errors.append("Please enter a Campaign Theme in the sidebar.")
         if total_items == 0:
@@ -231,7 +251,7 @@ with tab1:
             st.stop()
 
         brief = build_brief()
-        llm = LLMClient(gemini_api_key=gemini_key, groq_api_key=groq_key)
+        llm   = LLMClient(gemini_api_key=GEMINI_API_KEY, groq_api_key=GROQ_API_KEY)
 
         sources = []
         if uploaded_files:
@@ -247,9 +267,9 @@ with tab1:
                 sources.append({"bytes": d["text"], "type": "raw_text", "name": d["name"]})
 
         progress_bar = st.progress(0, text="Starting…")
-        status_box = st.status("Processing…", expanded=True)
-        start_time = time.time()
-        total = len(sources)
+        status_box   = st.status("Processing…", expanded=True)
+        start_time   = time.time()
+        total        = len(sources)
 
         # Phase 1: Extraction
         status_box.write("**Phase 1 — Extracting text…**")
@@ -291,7 +311,7 @@ with tab1:
             progress_bar.progress((total + i + 1) / (total * 3), text=f"Analyzing [{i+1}/{total}]…")
 
         # Phase 3: Fact-checking
-        if not skip_factcheck and tavily_key:
+        if not skip_factcheck and TAVILY_API_KEY:
             status_box.write("**Phase 3 — Fact-checking claims…**")
             for i, result in enumerate(analyzed_items):
                 if result.get("analysis_status") != "success":
@@ -300,11 +320,10 @@ with tab1:
                 if not raw_claims:
                     continue
                 try:
-                    fcs = fact_check_claims(raw_claims, result["source_name"], llm, tavily_key)
+                    fcs = fact_check_claims(raw_claims, result["source_name"], llm, TAVILY_API_KEY)
                     result["fact_checks"] = fcs
-                    # Re-run risk scorer with actual fact-check verdicts
                     result = _compute_risk_score(result, fact_checks=fcs)
-                    result['recommendation'] = compute_recommendation(result)
+                    result["recommendation"] = compute_recommendation(result)
                     checked = sum(1 for f in fcs if f.get("search_performed"))
                     status_box.write(f"✅ {checked} claim(s) checked for `{result['source_name']}`")
                 except Exception as e:
@@ -313,13 +332,13 @@ with tab1:
                     (total * 2 + i + 1) / (total * 3),
                     text=f"Fact-checking [{i+1}/{total}]…",
                 )
-        elif not skip_factcheck and not tavily_key:
-            status_box.write("⚠️ Tavily key not provided — fact-checking skipped.")
+        elif not skip_factcheck and not TAVILY_API_KEY:
+            status_box.write("⚠️ Tavily key not configured — fact-checking skipped.")
 
         # Compute recommendation for items where fact-checking was skipped
         for result in analyzed_items:
-            if result.get('analysis_status') == 'success' and 'recommendation' not in result:
-                result['recommendation'] = compute_recommendation(result)
+            if result.get("analysis_status") == "success" and "recommendation" not in result:
+                result["recommendation"] = compute_recommendation(result)
 
         progress_bar.progress(1.0, text="Complete!")
         elapsed = round(time.time() - start_time, 1)
@@ -327,7 +346,7 @@ with tab1:
         st.success(f"🎉 Analysis complete! {total} item(s) processed in {elapsed}s.")
         st.balloons()
 
-        st.session_state["results"] = analyzed_items
+        st.session_state["results"]       = analyzed_items
         st.session_state["run_timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
 # ─────────────────────────── TAB 2: RESULTS ───────────────────────────────────
