@@ -39,40 +39,37 @@ def export_to_csv(results: list) -> bytes:
             f"{e.get('name')} ({e.get('stance')})" for e in r.get("entities", [])
         )
         cf = r.get("campaign_fit", {})
-        for fc in fact_checks:
-            rows.append({
-                "Source": r.get("source_name", ""),
-                "Core Narrative": r.get("core_narrative", ""),
-                "Intent": r.get("intent", ""),
-                "Sentiment": r.get("sentiment_overall", ""),
-                "Fit Score": cf.get("score", ""),
-                "Fit Label": cf.get("label", ""),
-                "Entities": entities_str,
-                "True Claims": counts["TRUE"],
-                "False Claims": counts["FALSE"],
-                "Misleading": counts["MISLEADING"],
-                "Unverifiable": counts["UNVERIFIABLE"],
-                "Provider": r.get("provider_used", ""),
-                "Claim": fc.get("claim", ""),
-                "Claim Type": fc.get("claim_type", ""),
-                "Verdict": fc.get("verdict", ""),
-                "Confidence": fc.get("confidence", ""),
-                "Reasoning": fc.get("reasoning", ""),
-                "Correct Fact": fc.get("correct_fact", ""),
-                "Source URL": fc.get("source_url", ""),
-            })
-        if not fact_checks:
-            rows.append({
-                "Source": r.get("source_name", ""),
-                "Core Narrative": r.get("core_narrative", ""),
-                "Intent": r.get("intent", ""),
-                "Sentiment": r.get("sentiment_overall", ""),
-                "Fit Score": cf.get("score", ""),
-                "Fit Label": cf.get("label", ""),
-                "Entities": entities_str,
-                "True Claims": 0, "False Claims": 0,
-                "Misleading": 0, "Unverifiable": 0,
-                "Provider": r.get("provider_used", ""),
+        risk = r.get("risk_assessment", {})
+        base = {
+            "Source": r.get("source_name", ""),
+            "Core Narrative": r.get("core_narrative", ""),
+            "Intent": r.get("intent", ""),
+            "Sentiment": r.get("sentiment_overall", ""),
+            "Fit Score": cf.get("score", ""),
+            "Fit Label": cf.get("label", ""),
+            "Risk Level": risk.get("risk_level", "N/A"),
+            "Risk Score": risk.get("risk_score", 0),
+            "Needs Review": "Yes" if risk.get("needs_human_review", False) else "No",
+            "Entities": entities_str,
+            "True Claims": counts["TRUE"],
+            "False Claims": counts["FALSE"],
+            "Misleading": counts["MISLEADING"],
+            "Unverifiable": counts["UNVERIFIABLE"],
+            "Provider": r.get("provider_used", ""),
+        }
+        if fact_checks:
+            for fc in fact_checks:
+                rows.append({**base,
+                    "Claim": fc.get("claim", ""),
+                    "Claim Type": fc.get("claim_type", ""),
+                    "Verdict": fc.get("verdict", ""),
+                    "Confidence": fc.get("confidence", ""),
+                    "Reasoning": fc.get("reasoning", ""),
+                    "Correct Fact": fc.get("correct_fact", "") or "",
+                    "Source URL": fc.get("source_url", "") or "",
+                })
+        else:
+            rows.append({**base,
                 "Claim": "", "Claim Type": "", "Verdict": "",
                 "Confidence": "", "Reasoning": "", "Correct Fact": "", "Source URL": "",
             })
@@ -89,6 +86,8 @@ def export_to_excel(results: list) -> bytes:
         fact_checks = r.get("fact_checks", [])
         counts = _count_verdicts(fact_checks)
         cf = r.get("campaign_fit", {})
+        risk = r.get("risk_assessment", {})
+        alignment = r.get("campaign_alignment", {})
         warnings = "; ".join(w for w in r.get("content_warnings", []) if w and w != "none")
 
         summary_rows.append({
@@ -104,6 +103,12 @@ def export_to_excel(results: list) -> bytes:
             "False Claims": counts["FALSE"],
             "Misleading": counts["MISLEADING"],
             "Unverifiable": counts["UNVERIFIABLE"],
+            "Risk Level": risk.get("risk_level", "N/A"),
+            "Risk Score": risk.get("risk_score", 0),
+            "Needs Review": "Yes" if risk.get("needs_human_review", False) else "No",
+            "Campaign Aligned": "Yes" if alignment.get("aligned", False) else "No",
+            "Alignment Summary": alignment.get("alignment_summary", ""),
+            "Red Flags": " | ".join(alignment.get("red_flags", [])),
             "Provider Used": r.get("provider_used", ""),
         })
 
@@ -131,49 +136,84 @@ def export_to_excel(results: list) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_sum = pd.DataFrame(summary_rows)
-        df_fc = pd.DataFrame(fc_rows) if fc_rows else pd.DataFrame(columns=["Source","Claim","Type","Verdict","Confidence","Reasoning","Correct Fact","Source URL"])
-        df_ent = pd.DataFrame(entity_rows) if entity_rows else pd.DataFrame(columns=["Source","Entity Name","Type","Stance","Context"])
+        df_fc = pd.DataFrame(fc_rows) if fc_rows else pd.DataFrame(
+            columns=["Source", "Claim", "Type", "Verdict", "Confidence", "Reasoning", "Correct Fact", "Source URL"]
+        )
+        df_ent = pd.DataFrame(entity_rows) if entity_rows else pd.DataFrame(
+            columns=["Source", "Entity Name", "Type", "Stance", "Context"]
+        )
 
         df_sum.to_excel(writer, sheet_name="Summary", index=False)
         df_fc.to_excel(writer, sheet_name="Fact Checks", index=False)
         df_ent.to_excel(writer, sheet_name="Entities", index=False)
 
         wb = writer.book
-
-        # Color: Campaign Fit Score in Summary
         ws_sum = wb["Summary"]
-        score_col = None
+
+        # Color: Campaign Fit Score
         for cell in ws_sum[1]:
             if cell.value == "Campaign Fit Score":
-                score_col = cell.column
+                for row in ws_sum.iter_rows(min_row=2, min_col=cell.column, max_col=cell.column):
+                    for c in row:
+                        if isinstance(c.value, (int, float)):
+                            c.font = Font(
+                                color="00D4AA" if c.value >= 80 else "FFB800" if c.value >= 50 else "FF4B6E",
+                                bold=True
+                            )
                 break
-        if score_col:
-            for row in ws_sum.iter_rows(min_row=2, min_col=score_col, max_col=score_col):
-                for cell in row:
-                    if isinstance(cell.value, (int, float)):
-                        if cell.value >= 80:
-                            cell.font = Font(color="00D4AA", bold=True)
-                        elif cell.value >= 50:
-                            cell.font = Font(color="FFB800", bold=True)
-                        else:
-                            cell.font = Font(color="FF4B6E", bold=True)
+
+        # Color: Risk Level column
+        for cell in ws_sum[1]:
+            if cell.value == "Risk Level":
+                risk_fills = {
+                    "HIGH":   PatternFill("solid", fgColor="FF4B6E"),
+                    "MEDIUM": PatternFill("solid", fgColor="FFB800"),
+                    "LOW":    PatternFill("solid", fgColor="00D4AA"),
+                }
+                for row in ws_sum.iter_rows(min_row=2, min_col=cell.column, max_col=cell.column):
+                    for c in row:
+                        if str(c.value) in risk_fills:
+                            c.fill = risk_fills[str(c.value)]
+                break
 
         # Color: Verdict column in Fact Checks
         ws_fc = wb["Fact Checks"]
-        verdict_col = None
         for cell in ws_fc[1]:
             if cell.value == "Verdict":
-                verdict_col = cell.column
+                for row in ws_fc.iter_rows(min_row=2, min_col=cell.column, max_col=cell.column):
+                    for c in row:
+                        v = str(c.value or "")
+                        if v in VERDICT_FILLS:
+                            c.fill = VERDICT_FILLS[v]
+                            c.font = VERDICT_FONTS.get(v, Font())
                 break
-        if verdict_col:
-            for row in ws_fc.iter_rows(min_row=2, min_col=verdict_col, max_col=verdict_col):
-                for cell in row:
-                    v = str(cell.value or "")
-                    if v in VERDICT_FILLS:
-                        cell.fill = VERDICT_FILLS[v]
-                        cell.font = VERDICT_FONTS.get(v, Font())
 
-        # Auto-width for all sheets
+        # Sheet 4: Review Queue
+        ws_review = wb.create_sheet("Review Queue")
+        review_headers = [
+            "Source", "Risk Level", "Risk Score",
+            "Review Reason", "Risk Factors",
+            "False Claims Count", "Campaign Fit Score",
+        ]
+        ws_review.append(review_headers)
+        for r in results:
+            risk = r.get("risk_assessment", {})
+            if risk.get("needs_human_review", False):
+                false_count = sum(
+                    1 for fc in r.get("fact_checks", [])
+                    if fc.get("verdict") in ["FALSE", "MISLEADING"]
+                )
+                ws_review.append([
+                    r.get("source_name", ""),
+                    risk.get("risk_level", ""),
+                    risk.get("risk_score", 0),
+                    risk.get("review_reason", ""),
+                    " | ".join(risk.get("risk_factors", [])),
+                    false_count,
+                    r.get("campaign_fit", {}).get("score", 0),
+                ])
+
+        # Auto-width all sheets
         for ws in wb.worksheets:
             for col in ws.columns:
                 max_len = max((len(str(c.value or "")) for c in col), default=10)

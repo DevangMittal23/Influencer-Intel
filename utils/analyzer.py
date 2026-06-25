@@ -24,6 +24,17 @@ Target Audience: {campaign_brief.get('target_audience', '')}
 CONTENT TO ANALYZE:
 {text}
 
+Risk score rules (be consistent):
+- Start at 0
+- Add 3 if intent is "mislead"
+- Add 2 if intent is "criticize" AND target is an official/government body
+- Add 1.5 per checkworthy factual claim that appears exaggerated or emotional
+- Add 2 if content_warnings is not empty
+- Add 2 if campaign fit score is below 20
+- Maximum score is 10
+- risk_level: 7-10 = HIGH, 4-6 = MEDIUM, 0-3 = LOW
+- needs_human_review = true if risk_score >= 6 OR if intent == "mislead" OR if any claim makes a specific statistic that contradicts established science
+
 Return ONLY this JSON structure, nothing else:
 {{
   "core_narrative": "2-3 sentence summary of main message",
@@ -51,6 +62,25 @@ Return ONLY this JSON structure, nothing else:
       "checkworthy": true
     }}
   ],
+  "risk_assessment": {{
+    "risk_score": 7,
+    "risk_level": "HIGH",
+    "risk_factors": [
+      "Contains unverified health statistics",
+      "Promotes distrust of government sources",
+      "High potential to mislead general audience"
+    ],
+    "needs_human_review": true,
+    "review_reason": "Multiple unverified claims with anti-authority framing"
+  }},
+  "campaign_alignment": {{
+    "aligned": false,
+    "alignment_summary": "Content directly contradicts evidence-based health messaging",
+    "red_flags": [
+      "Promotes unverified statistics",
+      "Undermines official health bodies"
+    ]
+  }},
   "content_warnings": ["list any concerning content patterns or none"],
   "language_detected": "en|hi|mixed",
   "word_count": 250
@@ -65,6 +95,77 @@ def _parse_json(raw: str) -> dict:
     return json.loads(raw)
 
 
+def _compute_risk_score(result: dict, fact_checks: list = None) -> dict:
+    score = 0
+    factors = []
+
+    intent = result.get('intent', '')
+    if intent == 'mislead':
+        score += 3
+        factors.append("Misleading intent detected by LLM")
+    elif intent == 'criticize':
+        score += 1
+        factors.append("Critical intent detected")
+
+    warnings = result.get('content_warnings', [])
+    if warnings and warnings != ['none']:
+        score += 2
+        factors.append(f"Content warnings present: {len(warnings)} flags")
+
+    fit_score = result.get('campaign_fit', {}).get('score', 100)
+    if isinstance(fit_score, (int, float)):
+        if fit_score < 20:
+            score += 2
+            factors.append(f"Very low campaign alignment ({fit_score}/100)")
+        elif fit_score < 40:
+            score += 1
+            factors.append(f"Weak campaign alignment ({fit_score}/100)")
+
+    claims = result.get('factual_claims', [])
+    checkworthy_count = sum(1 for c in claims if c.get('checkworthy', False))
+    if checkworthy_count >= 3:
+        score += 1.5
+        factors.append(f"{checkworthy_count} checkworthy claims detected")
+
+    if fact_checks:
+        false_count = sum(
+            1 for fc in fact_checks
+            if fc.get('verdict') in ['FALSE', 'MISLEADING']
+        )
+        score += false_count * 2
+        if false_count > 0:
+            factors.append(f"{false_count} false/misleading claims verified")
+
+    score = min(10, round(score, 1))
+    level = "HIGH" if score >= 7 else "MEDIUM" if score >= 4 else "LOW"
+    needs_review = (
+        score >= 6
+        or intent == 'mislead'
+        or (fact_checks and any(fc.get('verdict') == 'FALSE' for fc in fact_checks))
+    )
+
+    existing = result.get('risk_assessment', {})
+    llm_score = existing.get('risk_score', 0)
+
+    if score > llm_score:
+        result['risk_assessment'] = {
+            'risk_score': score,
+            'risk_level': level,
+            'risk_factors': factors,
+            'needs_human_review': needs_review,
+            'review_reason': existing.get(
+                'review_reason',
+                " | ".join(factors[:2]) if factors else "Manual review recommended"
+            ),
+        }
+    else:
+        if 'risk_assessment' not in result:
+            result['risk_assessment'] = {}
+        result['risk_assessment']['needs_human_review'] = needs_review
+
+    return result
+
+
 def analyze_content(text: str, source_name: str, campaign_brief: dict, llm_client: LLMClient) -> dict:
     prompt = _build_prompt(text, campaign_brief)
     raw, provider = llm_client.generate(prompt, SYSTEM_PROMPT, temperature=0.1)
@@ -72,7 +173,6 @@ def analyze_content(text: str, source_name: str, campaign_brief: dict, llm_clien
     try:
         result = _parse_json(raw)
     except (json.JSONDecodeError, ValueError):
-        # Retry once with stricter prompt
         raw2, provider = llm_client.generate(prompt + STRICT_RETRY_SUFFIX, SYSTEM_PROMPT, temperature=0.1)
         try:
             result = _parse_json(raw2)
@@ -87,4 +187,5 @@ def analyze_content(text: str, source_name: str, campaign_brief: dict, llm_clien
     result["source_name"] = source_name
     result["analysis_status"] = "success"
     result["provider_used"] = provider
+    result = _compute_risk_score(result, fact_checks=[])
     return result

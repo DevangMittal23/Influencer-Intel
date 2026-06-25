@@ -13,13 +13,13 @@ from components.result_cards import render_result_card
 from components.dashboard import render_metrics, render_dashboard_table
 from utils.llm_client import LLMClient
 from utils.extractor import extract_text
-from utils.analyzer import analyze_content
+from utils.analyzer import analyze_content, _compute_risk_score
 from utils.factchecker import fact_check_claims
 from utils.exporter import export_to_csv, export_to_excel
 
 apply_styles()
 
-# ── Demo data ────────────────────────────────────────────────────────────────
+# ── Demo data ─────────────────────────────────────────────────────────────────
 DEMO_TEXTS = [
     {
         "text": (
@@ -48,24 +48,39 @@ DEMO_BRIEF = {
     "target_audience": "General public",
 }
 
-# ── Session state defaults ────────────────────────────────────────────────────
+# ── Session state defaults ─────────────────────────────────────────────────────
 for key, default in [
     ("results", []),
     ("run_timestamp", None),
-    ("active_tab", 0),
     ("demo_loaded", False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
-# ── Read Streamlit secrets (optional) ────────────────────────────────────────
-def _secret(key: str, fallback: str = "") -> str:
+# ── API key persistence ────────────────────────────────────────────────────────
+def _secret(name: str) -> str:
     try:
-        return st.secrets["api_keys"].get(key, fallback)
+        return st.secrets["api_keys"].get(name, "")
     except Exception:
-        return fallback
+        return ""
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+for _k, _s in [("_gemini_key", "GEMINI_API_KEY"), ("_groq_key", "GROQ_API_KEY"), ("_tavily_key", "TAVILY_API_KEY")]:
+    if _k not in st.session_state:
+        st.session_state[_k] = _secret(_s)
+
+# ── Campaign brief persistence ─────────────────────────────────────────────────
+_brief_defaults = {
+    "_campaign_theme": "",
+    "_campaign_message": "",
+    "_campaign_people": "",
+    "_campaign_purpose": "Public Health",
+    "_campaign_audience": "",
+}
+for k, v in _brief_defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🔍 Influencer Intel")
     st.markdown("---")
@@ -73,78 +88,100 @@ with st.sidebar:
     st.markdown("### 🎯 Campaign Brief")
     campaign_theme = st.text_input(
         "Campaign Theme",
-        value=st.session_state.get("sb_theme", ""),
         placeholder="e.g. Natural immunity, Climate action",
+        key="_campaign_theme",
     )
     required_message = st.text_area(
         "Required Message",
-        value=st.session_state.get("sb_message", ""),
         placeholder="What should the content say?",
-        height=80,
+        key="_campaign_message",
+        height=100,
     )
     key_people = st.text_input(
         "Key People/Groups to Track",
-        value=st.session_state.get("sb_people", ""),
-        placeholder="Comma separated: Dr. Anjali, Ministry of Health",
+        placeholder="Dr. Anjali, Ministry of Health",
+        key="_campaign_people",
     )
     campaign_purpose = st.selectbox(
         "Campaign Purpose",
-        ["Public Health", "Political", "Brand Promotion", "Social Awareness", "Entertainment", "Other"],
+        options=["Public Health", "Political", "Brand Promotion", "Social Awareness", "Entertainment", "Other"],
+        key="_campaign_purpose",
     )
     target_audience = st.text_input(
         "Target Audience",
-        value=st.session_state.get("sb_audience", ""),
-        placeholder="e.g. General public, Youth 18-25",
+        key="_campaign_audience",
     )
+
+    if st.button("⚡ Load Demo Brief", use_container_width=True):
+        st.session_state["_campaign_theme"] = DEMO_BRIEF["theme"]
+        st.session_state["_campaign_message"] = DEMO_BRIEF["required_message"]
+        st.session_state["_campaign_people"] = ", ".join(DEMO_BRIEF["required_people"])
+        st.session_state["_campaign_purpose"] = DEMO_BRIEF["purpose"]
+        st.session_state["_campaign_audience"] = DEMO_BRIEF["target_audience"]
+        st.rerun()
 
     st.markdown("---")
     st.markdown("### 🔑 API Configuration")
+
     gemini_key = st.text_input(
-        "Gemini API Key", type="password",
-        value=_secret("GEMINI_API_KEY"),
+        "Gemini API Key",
+        type="password",
+        key="_gemini_key",
+        help="Get from: aistudio.google.com",
     )
     groq_key = st.text_input(
-        "Groq API Key", type="password",
-        value=_secret("GROQ_API_KEY"),
+        "Groq API Key",
+        type="password",
+        key="_groq_key",
+        help="Get from: console.groq.com",
     )
     tavily_key = st.text_input(
-        "Tavily API Key", type="password",
-        value=_secret("TAVILY_API_KEY"),
+        "Tavily API Key",
+        type="password",
+        key="_tavily_key",
+        help="Get from: tavily.com",
     )
-    st.caption("🔒 Keys are used only for this session")
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.markdown(f"{'🟢' if gemini_key else '🔴'} Gemini")
+    col_b.markdown(f"{'🟢' if groq_key else '🔴'} Groq")
+    col_c.markdown(f"{'🟢' if tavily_key else '⚪'} Tavily")
+    st.caption("🔒 Keys stored only in your browser session")
 
     st.markdown("---")
     st.markdown("### ⚙️ Processing Settings")
     max_claims = st.slider("Max Claims to Fact-Check per Item", 1, 10, 5)
     skip_factcheck = st.checkbox("Skip Fact-Checking (faster)", value=False)
-    # concurrency note: Streamlit is sequential
     st.selectbox("Batch Concurrency", [1, 2, 3], index=1)
 
-# ── Build campaign brief dict ─────────────────────────────────────────────────
+
+# ── Build campaign brief dict ──────────────────────────────────────────────────
 def build_brief() -> dict:
-    people = [p.strip() for p in key_people.split(",") if p.strip()]
+    people = [p.strip() for p in st.session_state["_campaign_people"].split(",") if p.strip()]
     return {
-        "theme": campaign_theme,
-        "required_message": required_message,
+        "theme": st.session_state["_campaign_theme"],
+        "required_message": st.session_state["_campaign_message"],
         "required_people": people,
-        "purpose": campaign_purpose,
-        "target_audience": target_audience,
+        "purpose": st.session_state["_campaign_purpose"],
+        "target_audience": st.session_state["_campaign_audience"],
     }
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["📥 Input Content", "📊 Results Dashboard", "📤 Export"])
 
-# ─────────────────────────── TAB 1: INPUT ────────────────────────────────────
+# ── Tabs ───────────────────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📥 Input Content",
+    "📊 Results Dashboard",
+    "📈 Batch Intelligence",
+    "📤 Export",
+])
+
+# ─────────────────────────── TAB 1: INPUT ─────────────────────────────────────
 with tab1:
     st.markdown("### Upload or Paste Content")
 
     if st.button("🧪 Load Demo Content", key="demo_btn"):
         st.session_state["demo_loaded"] = True
-        st.session_state["sb_theme"] = DEMO_BRIEF["theme"]
-        st.session_state["sb_message"] = DEMO_BRIEF["required_message"]
-        st.session_state["sb_people"] = ", ".join(DEMO_BRIEF["required_people"])
-        st.session_state["sb_audience"] = DEMO_BRIEF["target_audience"]
-        st.success("✅ Demo content loaded! The sidebar has been pre-filled with the demo campaign brief. Click **Run Analysis** to proceed.")
+        st.success("✅ Demo content loaded! Click **Run Analysis** to proceed.")
 
     col_left, col_right = st.columns(2)
     with col_left:
@@ -168,7 +205,6 @@ with tab1:
             placeholder="Paste a single content piece here for quick analysis…",
         )
 
-    # Count items
     url_list = [u.strip() for u in url_input.splitlines() if u.strip()]
     n_files = len(uploaded_files) if uploaded_files else 0
     n_urls = len(url_list)
@@ -183,11 +219,10 @@ with tab1:
     run_clicked = st.button("🚀 Run Analysis", use_container_width=True, key="run_btn")
 
     if run_clicked:
-        # Validation
         errors = []
         if not gemini_key and not groq_key:
             errors.append("Please enter at least one LLM API key (Gemini or Groq) in the sidebar.")
-        if not campaign_theme.strip():
+        if not st.session_state["_campaign_theme"].strip():
             errors.append("Please enter a Campaign Theme in the sidebar.")
         if total_items == 0:
             errors.append("Please upload files, enter URLs, paste text, or load demo content.")
@@ -199,7 +234,6 @@ with tab1:
         brief = build_brief()
         llm = LLMClient(gemini_api_key=gemini_key, groq_api_key=groq_key)
 
-        # Gather all sources
         sources = []
         if uploaded_files:
             for f in uploaded_files:
@@ -215,7 +249,6 @@ with tab1:
 
         progress_bar = st.progress(0, text="Starting…")
         status_box = st.status("Processing…", expanded=True)
-        all_results = []
         start_time = time.time()
         total = len(sources)
 
@@ -256,10 +289,7 @@ with tab1:
                 status_box.write(f"❌ `{item['source_name']}` analysis failed: {e}")
             result["fact_checks"] = []
             analyzed_items.append(result)
-            progress_bar.progress(
-                (total + i + 1) / (total * 3),
-                text=f"Analyzing [{i+1}/{total}]…",
-            )
+            progress_bar.progress((total + i + 1) / (total * 3), text=f"Analyzing [{i+1}/{total}]…")
 
         # Phase 3: Fact-checking
         if not skip_factcheck and tavily_key:
@@ -273,6 +303,8 @@ with tab1:
                 try:
                     fcs = fact_check_claims(raw_claims, result["source_name"], llm, tavily_key)
                     result["fact_checks"] = fcs
+                    # Re-run risk scorer with actual fact-check verdicts
+                    result = _compute_risk_score(result, fact_checks=fcs)
                     checked = sum(1 for f in fcs if f.get("search_performed"))
                     status_box.write(f"✅ {checked} claim(s) checked for `{result['source_name']}`")
                 except Exception as e:
@@ -293,7 +325,7 @@ with tab1:
         st.session_state["results"] = analyzed_items
         st.session_state["run_timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
-# ─────────────────────────── TAB 2: RESULTS ──────────────────────────────────
+# ─────────────────────────── TAB 2: RESULTS ───────────────────────────────────
 with tab2:
     results = st.session_state.get("results", [])
     if not results:
@@ -302,18 +334,32 @@ with tab2:
         ts = st.session_state.get("run_timestamp", "")
         if ts:
             st.caption(f"Last run: {ts}")
-
         render_metrics(results)
         st.markdown("")
-
         filtered = render_dashboard_table(results)
         st.markdown("---")
         st.markdown("### Detailed Results")
         for r in filtered:
             render_result_card(r)
 
-# ─────────────────────────── TAB 3: EXPORT ───────────────────────────────────
+# ─────────────────────────── TAB 3: BATCH INTELLIGENCE ───────────────────────
 with tab3:
+    if not st.session_state.get("results"):
+        st.markdown("""
+            <div style="text-align:center; padding:60px 0; color:#6B7280;">
+                <div style="font-size:48px;">📈</div>
+                <div style="font-size:20px; margin-top:16px;">No analysis run yet</div>
+                <div style="margin-top:8px; font-size:14px;">
+                    Run an analysis from the Input Content tab to see batch intelligence here
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        from components.batch_intelligence import render_batch_intelligence
+        render_batch_intelligence(st.session_state["results"])
+
+# ─────────────────────────── TAB 4: EXPORT ────────────────────────────────────
+with tab4:
     results = st.session_state.get("results", [])
     if not results:
         st.info("No results to export yet. Run analysis first.")
@@ -321,16 +367,20 @@ with tab3:
         st.markdown("### Export Results")
         good = [r for r in results if r.get("analysis_status") == "success"]
         total_claims_export = sum(len(r.get("fact_checks", [])) for r in good)
+        flagged_count = sum(
+            1 for r in good
+            if r.get("risk_assessment", {}).get("needs_human_review", False)
+        )
         st.markdown(
             f"- **{len(good)}** successfully analyzed items\n"
             f"- **{total_claims_export}** fact-checked claims\n"
-            f"- **{sum(len(r.get('entities',[])) for r in good)}** entities extracted"
+            f"- **{sum(len(r.get('entities', [])) for r in good)}** entities extracted\n"
+            f"- **{flagged_count}** items flagged for human review"
         )
 
         col_xl, col_csv = st.columns(2)
-
         with col_xl:
-            st.markdown("**Excel Report** — 3 sheets: Summary, Fact Checks, Entities. Color-coded verdicts and fit scores.")
+            st.markdown("**Excel Report** — 4 sheets: Summary, Fact Checks, Entities, Review Queue. Color-coded.")
             try:
                 excel_bytes = export_to_excel(results)
                 st.download_button(

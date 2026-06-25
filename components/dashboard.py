@@ -19,7 +19,6 @@ def render_metrics(results: list):
         if r.get("analysis_status") == "success"
     ]
     avg_score = round(sum(scores) / len(scores), 1) if scores else 0
-
     total_claims = sum(len(r.get("fact_checks", [])) for r in results)
     bad_claims = sum(
         _count_verdicts(r.get("fact_checks", []))["FALSE"] +
@@ -47,7 +46,6 @@ def render_metrics(results: list):
 
 
 def render_dashboard_table(results: list) -> list:
-    """Render filters + table. Returns filtered results list."""
     if not results:
         return results
 
@@ -59,28 +57,30 @@ def render_dashboard_table(results: list) -> list:
     with fcol2:
         min_score = st.slider("Min Campaign Fit Score", 0, 100, 0, key="score_filter")
     with fcol3:
-        sort_by = st.selectbox("Sort by", ["Campaign Score ↓", "Source Name", "False Claims ↓"], key="sort_filter")
+        sort_by = st.selectbox("Sort by", ["Campaign Score ↓", "Source Name", "False Claims ↓", "Risk Score ↓"], key="sort_filter")
 
-    # Build rows for display
     rows = []
     for r in results:
         if r.get("analysis_status") != "success":
             continue
         fcs = r.get("fact_checks", [])
         counts = _count_verdicts(fcs)
-        # Check verdict filter: include row if any of its verdicts match selected
         row_verdicts = {fc.get("verdict") for fc in fcs}
         if selected_verdicts and not row_verdicts.intersection(set(selected_verdicts)) and fcs:
             continue
         score = r.get("campaign_fit", {}).get("score", 0)
         if isinstance(score, (int, float)) and score < min_score:
             continue
+        risk = r.get("risk_assessment", {})
         rows.append({
             "_result": r,
             "Source": r.get("source_name", ""),
             "Narrative Preview": (r.get("core_narrative", "") or "")[:80] + "…",
             "Intent": r.get("intent", ""),
             "Fit Score": score,
+            "Risk Score": risk.get("risk_score", 0),
+            "Risk Level": risk.get("risk_level", "N/A"),
+            "Review": "🚨 Review" if risk.get("needs_human_review", False) else "✅ Clear",
             "✅ True": counts["TRUE"],
             "❌ False": counts["FALSE"],
             "⚠️ Mislead": counts["MISLEADING"],
@@ -93,9 +93,26 @@ def render_dashboard_table(results: list) -> list:
         rows.sort(key=lambda x: x["Source"].lower())
     elif sort_by == "False Claims ↓":
         rows.sort(key=lambda x: x["❌ False"], reverse=True)
+    elif sort_by == "Risk Score ↓":
+        rows.sort(key=lambda x: x["Risk Score"], reverse=True)
 
     if rows:
         display_df = pd.DataFrame([{k: v for k, v in row.items() if k != "_result"} for row in rows])
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            display_df,
+            column_config={
+                "Fit Score": st.column_config.ProgressColumn(
+                    "Fit Score", min_value=0, max_value=100, format="%d",
+                ),
+                "Risk Score": st.column_config.ProgressColumn(
+                    "Risk Score", min_value=0, max_value=10, format="%.1f",
+                ),
+                "Review": st.column_config.TextColumn("👁 Review", width="small"),
+                "Narrative Preview": st.column_config.TextColumn("Narrative Preview", width="large"),
+            },
+            use_container_width=True,
+            hide_index=True,
+            height=400,
+        )
 
     return [row["_result"] for row in rows]
